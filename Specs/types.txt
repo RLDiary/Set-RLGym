@@ -1,0 +1,189 @@
+SET Engine Types – Specification
+================================
+
+Purpose
+-------
+- Define the canonical value types, enums, protocols, error taxonomy, and JSON shapes for a deterministic, training-friendly SET (card game) engine.
+- Capture invariants and contracts that downstream components (dealers, solvers, UI) can rely on.
+- Scope is limited to data modeling; no I/O, no game loop.
+
+Design Goals (from implementation intent)
+----------------------------------------
+- Deterministic and reproducible: explicit RNG seeds, stable hashing, frozen values.
+- Safety-first: frozen dataclasses and Enums; clear, specific error types.
+- Minimal but complete primitives for single-player (Zen) mode; extensible.
+
+Core Game Invariants
+--------------------
+- Set predicate: three cards form a Set iff for each attribute (number, color, shape, shading) the values are either all the same or all different.
+- Fresh board invariant: when deal policy requires it, an initial or refilled 12-card board must contain at least one valid Set; resample up to a max attempt limit.
+- Uniqueness: cards are unique within any `Deck`, `Board`, and `Discard` instance (no duplicates by attributes/ID).
+
+Identifiers and Aliases
+------------------------
+- `Seed`: integer newtype for RNG seeding. Required for reproducibility.
+- `CardId`: integer newtype in range [0, 80] for the canonical 81-card deck.
+- `BoardIndex`: integer newtype, 0-based index into the board cell tuple.
+
+Enumerations
+------------
+- `Number`: {ONE=1, TWO=2, THREE=3}
+- `Color`: {RED, GREEN, PURPLE}
+- `Shape`: {DIAMOND, SQUIGGLE, OVAL}
+- `Shading`: {SOLID, STRIPED, OPEN}
+- Convenience constants:
+  - `ALL_NUMBERS` = (ONE, TWO, THREE)
+  - `ALL_COLORS` = (RED, GREEN, PURPLE)
+  - `ALL_SHAPES` = (DIAMOND, SQUIGGLE, OVAL)
+  - `ALL_SHADINGS` = (SOLID, STRIPED, OPEN)
+
+Constants
+---------
+- `STANDARD_DECK_SIZE` = 81
+- `BOARD_MIN` = 12
+- `BOARD_STANDARD` = 12
+
+Card
+----
+- Type: frozen dataclass with slots.
+- Fields:
+  - `number: Number`
+  - `color: Color`
+  - `shape: Shape`
+  - `shading: Shading`
+  - `id: Optional[CardId]` (optional; deck constructors may fill this)
+- Canonical ID mapping (ternary encoding of 4 attributes):
+  - Let `n_idx, c_idx, s_idx, h_idx` ∈ {0,1,2} be the index of the attribute value within the corresponding ALL_* constant order.
+  - `id = n_idx + 3*c_idx + 9*s_idx + 27*h_idx`.
+- Methods:
+  - `as_tuple() -> (Number, Color, Shape, Shading)` – attribute quadruple.
+- Requirements:
+  - Must be immutable/hashable; safe for set/dict keys and frozen containers.
+  - IDs, when present, must be consistent with attributes; otherwise error should be raised by constructors/factories using `InvalidCardError`.
+
+CardTriple and SetTriple
+------------------------
+- `CardTriple`: `FrozenSet[Card]` representing an unordered 3-card selection.
+- `SetTriple`: frozen dataclass
+  - Field: `cards: CardTriple` (must contain exactly 3 distinct cards)
+  - Post-conditions:
+    - Length must be exactly 3, otherwise `InvalidSetError`.
+    - Construction SHOULD verify the Set predicate externally before creating `SetTriple`; violations should surface as `InvalidSetError`.
+
+Deck
+----
+- Type: frozen dataclass with `cards: Tuple[Card, ...]`.
+- Semantics:
+  - Ordered, immutable sequence of unique `Card` values (length typically 81).
+  - Iteration yields cards in order; `len(deck)` returns count.
+  - Duplicate detection is the responsibility of builders; duplicates SHOULD raise `DuplicateCardError`.
+
+Board
+-----
+- Type: frozen dataclass snapshot of the visible board.
+- Fields:
+  - `cells: Tuple[Optional[Card], ...]` – fixed capacity grid (e.g., 12 or 15). `None` represents an empty cell (e.g., after removing a set without refill).
+  - `present: FrozenSet[Card]` – derived set of non-None cards on the board.
+  - `indices: FrozenSet[BoardIndex]` – derived set of occupied cell indices.
+- Methods:
+  - `size() -> int` – number of cells (capacity).
+  - `occupied() -> int` – number of non-None cards present.
+- Invariants:
+  - `occupied() == len(present) == len(indices)` and equals the number of non-None entries in `cells`.
+  - All `present` cards are unique and appear at most once in `cells`.
+  - When the active `DealPolicy.ensure_at_least_one_set` is True, initial and post-refill boards MUST contain ≥ 1 valid Set, otherwise `InvariantViolation` in dealing logic.
+
+Discard
+-------
+- Type: frozen dataclass with `cards: FrozenSet[Card]`.
+- Semantics: mathematical bag/set of removed cards; ordering is irrelevant.
+
+DealPolicy
+----------
+- Type: `NamedTuple` with fields:
+  - `ensure_at_least_one_set: bool`
+    - If True, dealing must (re)sample up to `max_resample_attempts` until the board shows ≥ 1 valid Set.
+  - `board_capacity: int`
+    - Visible cell count. Typical 12; engines may support temporary +3.
+  - `max_resample_attempts: int`
+    - Hard cap to avoid infinite loops under adversarial RNG.
+- Default in `EngineConfig`: `ensure_at_least_one_set=True`, `board_capacity=12`, `max_resample_attempts=5`.
+
+RngSpec and RandomLike
+----------------------
+- `RngSpec(seed: Seed, source: Optional[UUID])`
+  - Seed is required; optional `source` can track upstream provenance (e.g., dataset shard ID).
+- `RandomLike` protocol:
+  - `shuffle(x: list) -> None`
+  - `randint(a: int, b: int) -> int` (inclusive)
+  - Implementable by `random.Random`, `numpy.random.Generator`, etc.
+
+ZenMode and EngineConfig
+------------------------
+- `ZenMode` (frozen dataclass):
+  - `target_min_sets: int = 0` – curriculum/training hook.
+  - `time_limit_s: Optional[float] = None` – optional timer.
+- `EngineConfig` (frozen dataclass):
+  - `rng: RngSpec` – required.
+  - `deal_policy: DealPolicy` – defaults as above.
+  - `zen: ZenMode | None` – optionally supplied or set post-init by factory.
+
+JSON Shapes (TypedDict Contracts)
+---------------------------------
+- `CardJSON`:
+  - `number: 1|2|3`
+  - `color: "red"|"green"|"purple"`
+  - `shape: "diamond"|"squiggle"|"oval"`
+  - `shading: "solid"|"striped"|"open"`
+  - `id: int` (0..80)
+- `BoardJSON`:
+  - `capacity: int`
+  - `cells: Sequence[Optional[int]]` – card IDs or `None`; length equals `capacity`.
+- `ConfigJSON`:
+  - `seed: int`
+  - `ensure_at_least_one_set: bool`
+  - `board_capacity: int`
+  - `max_resample_attempts: int`
+
+Protocols
+---------
+- `SetPredicate(a: Card, b: Card, c: Card) -> bool` – pluggable strategy for Set validation used by builders/validators.
+
+Errors
+------
+- `TypesError` – base class for type/invariant violations.
+- `InvalidCardError` – malformed card (e.g., inconsistent attributes vs. ID).
+- `DuplicateCardError` – duplicate card where uniqueness is required.
+- `InvalidSetError` – set predicate violated or wrong triple length for `SetTriple`.
+- `InvariantViolation` – engine-level invariant failure (e.g., board without a Set when required by policy).
+
+Determinism and Hashing
+-----------------------
+- All value types are frozen and hashable; safe for use in sets/maps.
+- RNG-dependent operations must take `RngSpec.seed` and an instance of `RandomLike` to guarantee reproducibility.
+
+Validation Guidance (for implementers)
+--------------------------------------
+- Card construction:
+  - If `id` is supplied, verify it matches the attribute tuple via canonical encoding; else raise `InvalidCardError`.
+  - If `id` is omitted, deck builders SHOULD compute and assign canonical IDs.
+- Deck/Board construction:
+  - Verify uniqueness of cards; duplicates SHOULD raise `DuplicateCardError`.
+  - For `Board`, ensure `present`/`indices` are consistent with `cells`.
+  - When `ensure_at_least_one_set=True`, verify Set existence before exposing the board; otherwise raise `InvariantViolation` (or resample up to policy limit).
+- Set validation:
+  - Use a `SetPredicate` implementation to test a triple before wrapping in `SetTriple`.
+
+Examples (non-normative)
+------------------------
+- Canonical ID derivation (pseudocode):
+  - `n_idx = ALL_NUMBERS.index(card.number)`
+  - `c_idx = ALL_COLORS.index(card.color)`
+  - `s_idx = ALL_SHAPES.index(card.shape)`
+  - `h_idx = ALL_SHADINGS.index(card.shading)`
+  - `card.id == n_idx + 3*c_idx + 9*s_idx + 27*h_idx`
+
+Out of Scope
+------------
+- Dealing algorithms, refilling policies beyond capacity/invariant checks.
+- Scoring, multiplayer rules, UI, persistence.

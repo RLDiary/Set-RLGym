@@ -1,0 +1,17 @@
+[project]
+name = "set"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "matplotlib>=3.10.6",
+    "pillow>=11.3.0",
+    "pycairo>=1.28.0",
+    "reportlab>=4.4.3",
+    "svglib>=1.5.1",
+    "svgwrite>=1.4.3",
+    "jinja2>=3.1.4",
+    "openai>=1.40.0",
+    "dotenv>=0.9.9",
+]
