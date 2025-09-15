@@ -24,7 +24,7 @@ import logging
 import os
 import re
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union, Callable
 from dotenv import load_dotenv
 from PIL import Image
 
@@ -139,55 +139,11 @@ def _pil_to_png_base64(img: Image.Image) -> str:
 # OpenAI client helpers
 # -----------------
 
-def _respond_with_gpt5(*, instructions: str, user_parts: List[Dict[str, Any]], model: str = "gpt-5", temperature: float = 1.0) -> str:
-    """Send a multimodal prompt to GPT-5 via the Responses API and return text."""
-    logger.debug(
-        f"Sending Responses API request to {model} with {len(user_parts)} content parts and temperature={temperature}"
-    )
-    try:
-        from openai import OpenAI  # type: ignore
-    except Exception as e:  # pragma: no cover - dependency guidance
-        raise RuntimeError(
-            "The OpenAI SDK is required. Install with `pip install openai`."
-        ) from e
-
-    api_key = os.environ.get("OPENAI_API_KEY")
-    if not api_key:
-        raise RuntimeError("OPENAI_API_KEY environment variable is not set.")
-
-    client = OpenAI(api_key=api_key)
-    logger.debug("Making OpenAI Responses API call")
-    resp = client.responses.create(
-        model=model,
-        instructions=instructions,
-        input=[
-            {
-                "role": "user",
-                "content": user_parts,
-            }
-        ],
-        temperature=temperature,
-    )
-    # Prefer helper property when available
-    content = getattr(resp, "output_text", None)
-    if content is None:
-        try:
-            chunks: List[str] = []
-            for item in getattr(resp, "output", []) or []:  # type: ignore[attr-defined]
-                for c in getattr(item, "content", []) or []:
-                    if getattr(c, "type", None) == "output_text":
-                        chunks.append(getattr(c, "text", ""))
-            content = "".join(chunks)
-        except Exception:
-            content = ""
-    content = (content or "").strip()
-    logger.debug(
-        f"Received Responses API content length: {len(content)} characters"
-    )
-    logger.debug(
-        f"Raw model response: {content[:200]}..." if len(content) > 200 else f"Raw model response: {content}"
-    )
-    return content
+try:
+    # Prefer explicit import path for local execution
+    from .inference import _respond_with_gpt5
+except ImportError:  # direct execution fallback
+    from inference import _respond_with_gpt5
 
 
 # -----------------
@@ -260,13 +216,25 @@ class TurnResult:
     result_image: Optional[Image.Image]
 
 
-def simulate_single_turn(seed: Optional[int] = None, *, save_prefix: Optional[str] = None) -> TurnResult:
-    """Run one SET turn with a GPT-5 agent.
+def simulate_single_turn(
+    seed: Optional[int] = None,
+    *,
+    save_prefix: Optional[str] = None,
+    inference_fn: Callable[[str, List[Dict[str, Any]]], str] = _respond_with_gpt5,
+) -> TurnResult:
+    """Run one SET turn with a specified inference function.
 
     - Creates a new environment (optionally seeded)
-    - Renders the system prompt and sends the initial board image to GPT-5
+    - Renders the system prompt and sends the initial board image via ``inference_fn``
     - Parses the returned action and applies it to the environment
     - Optionally saves images with the given prefix
+
+    Args:
+        seed: Optional RNG seed for deterministic environment.
+        save_prefix: If provided, saves initial and after-action board PNGs.
+        inference_fn: Callable that accepts ``instructions`` and ``user_parts`` and
+            returns the raw model text response. Defaults to the OpenAI GPT-5
+            implementation.
     """
     logger.info(f"Starting single turn simulation with seed={seed}, save_prefix={save_prefix}")
     env = SetEnv(seed=seed)
@@ -295,7 +263,7 @@ def simulate_single_turn(seed: Optional[int] = None, *, save_prefix: Optional[st
         },
     ]
 
-    reply_text = _respond_with_gpt5(instructions=system_prompt, user_parts=user_parts)
+    reply_text = inference_fn(instructions=system_prompt, user_parts=user_parts)
     logger.debug("Received response from GPT-5, parsing action")
     action, indices = _parse_action(reply_text)
     logger.info(f"Parsed action: {action}, indices: {indices}")
