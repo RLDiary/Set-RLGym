@@ -12,7 +12,7 @@
 - Python 3.12 required (see `pyproject.toml`).
 - Install deps (preferred): `uv sync`
 - Alt install (PEP 621): `pip install -e .`
-- Run agent demo: `python -m Set.agent --seed 42 --save-prefix demo`
+- Run agent demo: `python run.py --backend openai --verbose`
 - Run env demo (renders PNGs): `python Set/env.py`
 - Environment: set `OPENAI_API_KEY` (and optionally `OPENROUTER_API_KEY`). `.env` is supported via `python-dotenv`.
 
