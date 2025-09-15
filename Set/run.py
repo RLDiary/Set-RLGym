@@ -112,17 +112,13 @@ def run_game(
         print(f"  Save prefix: {save_prefix}")
         print()
     
-    # Temporarily monkey patch the inference function in agent module
-    import agent
-    original_respond = agent._respond_with_gpt5
-    agent._respond_with_gpt5 = inference_fn
-    
-    try:
-        result = simulate_single_turn(seed=seed, save_prefix=save_prefix)
-        return result
-    finally:
-        # Restore original function
-        agent._respond_with_gpt5 = original_respond
+    # Call agent with provided inference function (no monkey patching)
+    result = simulate_single_turn(
+        seed=seed,
+        save_prefix=save_prefix,
+        inference_fn=inference_fn,
+    )
+    return result
 
 
 def main():
