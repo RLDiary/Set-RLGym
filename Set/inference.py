@@ -25,6 +25,8 @@ def _respond_with_gpt5(
     user_parts: List[Dict[str, Any]],
     model: str = "gpt-5",
     temperature: float = 1.0,
+    reasoning_effort: str = "medium",
+    reasoning_summary: str = "detailed",
 ) -> Tuple[str, Optional[str]]:
     """Send a multimodal prompt to GPT-5 via the Responses API and return (content, reasoning).
 
@@ -49,11 +51,12 @@ def _respond_with_gpt5(
     logger.debug("Making OpenAI Responses API call")
     resp = client.responses.create(
         model=model,
+        reasoning={"effort": reasoning_effort, "summary": reasoning_summary},
         instructions=instructions,
         input=[
             {
                 "role": "user",
-                "content": user_parts,
+                "content": user_parts
             }
         ],
         temperature=temperature,
@@ -68,12 +71,20 @@ def _respond_with_gpt5(
             text_chunks: List[str] = []
             reasoning_chunks: List[str] = []
             for item in getattr(resp, "output", []) or []:  # type: ignore[attr-defined]
-                for c in getattr(item, "content", []) or []:
-                    ctype = getattr(c, "type", None)
-                    if ctype == "output_text":
-                        text_chunks.append(getattr(c, "text", ""))
-                    elif ctype == "reasoning":
-                        reasoning_chunks.append(getattr(c, "text", ""))
+                item_type = getattr(item, "type", None)
+                if item_type == "message":
+                    for c in getattr(item, "content", []) or []:
+                        if getattr(c, "type", None) == "output_text":
+                            text_chunks.append(getattr(c, "text", ""))
+                elif item_type == "reasoning":
+                    summary_list = getattr(item, "summary", None)
+                    if isinstance(summary_list, list):
+                        for s in summary_list:
+                            s_type = s.get("type") if isinstance(s, dict) else getattr(s, "type", None)
+                            if s_type == "summary_text":
+                                s_text = s.get("text") if isinstance(s, dict) else getattr(s, "text", "")
+                                if s_text:
+                                    reasoning_chunks.append(s_text)
             content = "".join(text_chunks)
             if reasoning_chunks:
                 reasoning = "\n".join(reasoning_chunks).strip() or None
@@ -84,26 +95,9 @@ def _respond_with_gpt5(
     # Extract reasoning using the Responses API top-level reasoning object when available.
     # See sample format: resp.reasoning = { "effort": ..., "summary": ... }
     if reasoning is None:
-        try:
-            r = getattr(resp, "reasoning", None)
-            # If SDK returns a dict-like
-            if isinstance(r, dict):
-                summary = r.get("summary")
-                if isinstance(summary, str) and summary.strip():
-                    reasoning = summary.strip()
-                else:
-                    # Fallback: stringify non-empty dict
-                    if r:
-                        reasoning = json.dumps(r, ensure_ascii=False)
-            else:
-                # If SDK returns an object with attributes
-                summary = getattr(r, "summary", None)
-                if isinstance(summary, str) and summary.strip():
-                    reasoning = summary.strip()
-                elif isinstance(r, str) and r.strip():
-                    reasoning = r.strip()
-        except Exception:
-            pass
+        logger.debug("No reasoning returned from Responses API")
+    else:
+        logger.debug(f"Received reasoning: {reasoning}")
 
     logger.debug(f"Received Responses API content length: {len(content)} characters")
     if reasoning is not None:
