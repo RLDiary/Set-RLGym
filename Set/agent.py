@@ -212,6 +212,7 @@ class TurnResult:
     action: str
     indices: Optional[Tuple[int, int, int]]
     env_message: Optional[str]
+    reasoning: Optional[str]
     initial_image: Image.Image
     result_image: Optional[Image.Image]
 
@@ -220,7 +221,7 @@ def simulate_single_turn(
     seed: Optional[int] = None,
     *,
     save_prefix: Optional[str] = None,
-    inference_fn: Callable[[str, List[Dict[str, Any]]], str] = _respond_with_gpt5,
+    inference_fn: Callable[[str, List[Dict[str, Any]]], Tuple[str, Optional[str]]] = _respond_with_gpt5,
 ) -> TurnResult:
     """Run one SET turn with a specified inference function.
 
@@ -233,8 +234,8 @@ def simulate_single_turn(
         seed: Optional RNG seed for deterministic environment.
         save_prefix: If provided, saves initial and after-action board PNGs.
         inference_fn: Callable that accepts ``instructions`` and ``user_parts`` and
-            returns the raw model text response. Defaults to the OpenAI GPT-5
-            implementation.
+            returns a tuple of (model_text, reasoning). Defaults to the OpenAI
+            GPT-5 implementation.
     """
     logger.info(f"Starting single turn simulation with seed={seed}, save_prefix={save_prefix}")
     env = SetEnv(seed=seed)
@@ -263,7 +264,7 @@ def simulate_single_turn(
         },
     ]
 
-    reply_text = inference_fn(instructions=system_prompt, user_parts=user_parts)
+    reply_text, reasoning = inference_fn(instructions=system_prompt, user_parts=user_parts)
     logger.debug("Received response from GPT-5, parsing action")
     action, indices = _parse_action(reply_text)
     logger.info(f"Parsed action: {action}, indices: {indices}")
@@ -295,6 +296,7 @@ def simulate_single_turn(
         action=action,
         indices=indices if action == "select" else None,
         env_message=msg,
+        reasoning=reasoning,
         initial_image=initial_img,
         result_image=img,
     )
@@ -320,6 +322,7 @@ if __name__ == "__main__":  # Simple CLI demo
         "action": result.action,
         "indices": result.indices,
         "env_message": result.env_message,
+        "reasoning": result.reasoning,
         "saved": {
             "initial": f"{args.save_prefix}_initial.png" if args.save_prefix else None,
             "after": f"{args.save_prefix}_after.png" if args.save_prefix else None,

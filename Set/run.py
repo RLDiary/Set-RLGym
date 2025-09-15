@@ -227,6 +227,7 @@ Examples:
             "action": result.action,
             "indices": result.indices,
             "env_message": result.env_message,
+            "reasoning": result.reasoning,
             "saved_images": {
                 "initial": f"{args.save_prefix}_initial.png" if args.save_prefix else None,
                 "after": f"{args.save_prefix}_after.png" if args.save_prefix else None,

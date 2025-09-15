@@ -13,14 +13,24 @@ import json
 import logging
 import os
 import requests
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple
 from PIL import Image
 
 logger = logging.getLogger(__name__)
 
 
-def _respond_with_gpt5(*, instructions: str, user_parts: List[Dict[str, Any]], model: str = "gpt-5", temperature: float = 1.0) -> str:
-    """Send a multimodal prompt to GPT-5 via the Responses API and return text."""
+def _respond_with_gpt5(
+    *,
+    instructions: str,
+    user_parts: List[Dict[str, Any]],
+    model: str = "gpt-5",
+    temperature: float = 1.0,
+) -> Tuple[str, Optional[str]]:
+    """Send a multimodal prompt to GPT-5 via the Responses API and return (content, reasoning).
+
+    Returns a tuple of the final output text and an optional reasoning trace if
+    the model provides one via the Responses API structured output.
+    """
     logger.debug(
         f"Sending Responses API request to {model} with {len(user_parts)} content parts and temperature={temperature}"
     )
@@ -49,29 +59,71 @@ def _respond_with_gpt5(*, instructions: str, user_parts: List[Dict[str, Any]], m
         temperature=temperature,
     )
     # Prefer helper property when available
+    # Extract output text and optional reasoning trace
     content = getattr(resp, "output_text", None)
-    if content is None:
+    reasoning: Optional[str] = None
+
+    if content is None or content.strip() == "":
         try:
-            chunks: List[str] = []
+            text_chunks: List[str] = []
+            reasoning_chunks: List[str] = []
             for item in getattr(resp, "output", []) or []:  # type: ignore[attr-defined]
                 for c in getattr(item, "content", []) or []:
-                    if getattr(c, "type", None) == "output_text":
-                        chunks.append(getattr(c, "text", ""))
-            content = "".join(chunks)
+                    ctype = getattr(c, "type", None)
+                    if ctype == "output_text":
+                        text_chunks.append(getattr(c, "text", ""))
+                    elif ctype == "reasoning":
+                        reasoning_chunks.append(getattr(c, "text", ""))
+            content = "".join(text_chunks)
+            if reasoning_chunks:
+                reasoning = "\n".join(reasoning_chunks).strip() or None
         except Exception:
-            content = ""
+            content = content or ""
+
     content = (content or "").strip()
-    logger.debug(
-        f"Received Responses API content length: {len(content)} characters"
-    )
+    # Extract reasoning using the Responses API top-level reasoning object when available.
+    # See sample format: resp.reasoning = { "effort": ..., "summary": ... }
+    if reasoning is None:
+        try:
+            r = getattr(resp, "reasoning", None)
+            # If SDK returns a dict-like
+            if isinstance(r, dict):
+                summary = r.get("summary")
+                if isinstance(summary, str) and summary.strip():
+                    reasoning = summary.strip()
+                else:
+                    # Fallback: stringify non-empty dict
+                    if r:
+                        reasoning = json.dumps(r, ensure_ascii=False)
+            else:
+                # If SDK returns an object with attributes
+                summary = getattr(r, "summary", None)
+                if isinstance(summary, str) and summary.strip():
+                    reasoning = summary.strip()
+                elif isinstance(r, str) and r.strip():
+                    reasoning = r.strip()
+        except Exception:
+            pass
+
+    logger.debug(f"Received Responses API content length: {len(content)} characters")
+    if reasoning is not None:
+        logger.debug(f"Received reasoning length: {len(reasoning)} characters")
     logger.debug(
         f"Raw model response: {content[:200]}..." if len(content) > 200 else f"Raw model response: {content}"
     )
-    return content
+    return content, reasoning
 
 
-def _respond_with_vllm(*, instructions: str, user_parts: List[Dict[str, Any]], model: str, base_url: str = "http://localhost:8000/v1", temperature: float = 1.0, api_key: str = "EMPTY") -> str:
-    """Send a multimodal prompt to vLLM server via OpenAI-compatible API and return text."""
+def _respond_with_vllm(
+    *,
+    instructions: str,
+    user_parts: List[Dict[str, Any]],
+    model: str,
+    base_url: str = "http://localhost:8000/v1",
+    temperature: float = 1.0,
+    api_key: str = "EMPTY",
+) -> Tuple[str, Optional[str]]:
+    """Send a multimodal prompt to vLLM server and return (content, reasoning|None)."""
     logger.debug(
         f"Sending vLLM request to {base_url} with model {model} and {len(user_parts)} content parts and temperature={temperature}"
     )
@@ -131,7 +183,8 @@ def _respond_with_vllm(*, instructions: str, user_parts: List[Dict[str, Any]], m
         logger.debug(
             f"Raw model response: {content[:200]}..." if len(content) > 200 else f"Raw model response: {content}"
         )
-        return content
+        reasoning: Optional[str] = None  # vLLM OpenAI-compatible API typically does not return reasoning traces
+        return content, reasoning
         
     except requests.exceptions.RequestException as e:
         logger.error(f"vLLM request failed: {e}")
@@ -141,8 +194,14 @@ def _respond_with_vllm(*, instructions: str, user_parts: List[Dict[str, Any]], m
         raise RuntimeError(f"Unexpected response format from vLLM server: {e}")
 
 
-def _respond_with_openrouter(*, instructions: str, user_parts: List[Dict[str, Any]], model: str, temperature: float = 1.0) -> str:
-    """Send a multimodal prompt to OpenRouter API and return text."""
+def _respond_with_openrouter(
+    *,
+    instructions: str,
+    user_parts: List[Dict[str, Any]],
+    model: str,
+    temperature: float = 1.0,
+) -> Tuple[str, Optional[str]]:
+    """Send a multimodal prompt to OpenRouter API and return (content, reasoning|None)."""
     logger.debug(
         f"Sending OpenRouter request with model {model} and {len(user_parts)} content parts and temperature={temperature}"
     )
@@ -207,7 +266,8 @@ def _respond_with_openrouter(*, instructions: str, user_parts: List[Dict[str, An
         logger.debug(
             f"Raw model response: {content[:200]}..." if len(content) > 200 else f"Raw model response: {content}"
         )
-        return content
+        reasoning: Optional[str] = None  # OpenRouter OpenAI-compatible API typically does not include reasoning
+        return content, reasoning
         
     except requests.exceptions.RequestException as e:
         logger.error(f"OpenRouter request failed: {e}")
