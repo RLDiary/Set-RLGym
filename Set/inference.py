@@ -6,7 +6,7 @@ Provides unified interface for multimodal prompting across different backends.
 """
 
 from __future__ import annotations
-
+from openai import OpenAI
 import base64
 import io
 import json
@@ -36,12 +36,6 @@ def _respond_with_gpt5(
     logger.debug(
         f"Sending Responses API request to {model} with {len(user_parts)} content parts and temperature={temperature}"
     )
-    try:
-        from openai import OpenAI  # type: ignore
-    except Exception as e:  # pragma: no cover - dependency guidance
-        raise RuntimeError(
-            "The OpenAI SDK is required. Install with `pip install openai`."
-        ) from e
 
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
@@ -49,18 +43,20 @@ def _respond_with_gpt5(
 
     client = OpenAI(api_key=api_key)
     logger.debug("Making OpenAI Responses API call")
-    resp = client.responses.create(
-        model=model,
-        reasoning={"effort": reasoning_effort, "summary": reasoning_summary},
-        instructions=instructions,
-        input=[
-            {
-                "role": "user",
-                "content": user_parts
-            }
-        ],
-        temperature=temperature,
-    )
+    resp = client.chat.completions.create(
+    model='Qwen2.5-VL-3B-Instruct/',
+    messages=[
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "What’s in this image? Be specific."},
+                {"type": "image_url", "image_url": {"url": image_url, "detail": "high"}},
+            ],
+        }
+    ],
+    temperature=0.2,
+    max_tokens=512,
+)
     # Prefer helper property when available
     # Extract output text and optional reasoning trace
     content = getattr(resp, "output_text", None)
@@ -123,37 +119,28 @@ def _respond_with_vllm(
     The payload mirrors the one used with the OpenAI SDK in `_respond_with_gpt5`.
     """
     logger.debug(
-        f"Sending vLLM Responses request to {base_url}/responses with model {model} and {len(user_parts)} content parts and temperature={temperature}"
+        f"Sending vLLM request to {base_url} with model {model} and {len(user_parts)} content parts and temperature={temperature}"
     )
-
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_key}",
-    }
-
-    payload: Dict[str, Any] = {
-        "model": model,
-        "instructions": instructions,
-        "input": [
-            {
-                "role": "user",
-                "content": user_parts,
-            }
-        ],
-        "temperature": temperature,
-        # Prefer Responses API naming for token limit; many proxies accept this.
-        "max_output_tokens": 1000,
-    }
+    client = OpenAI(base_url=base_url, api_key=api_key)
 
     try:
-        response = requests.post(
-            f"{base_url}/responses",
-            headers=headers,
-            json=payload,
-            timeout=45,
+        resp = client.chat.completions.create(
+        model=model,
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": instructions},
+                    {"type": "image_url", "image_url": {"url": image_url, "detail": "high"}}
+                ]
+            }
+        ],
+            
+        ],
+        temperature=temperature,
         )
-        response.raise_for_status()
-        result = response.json()
+
+        result = resp.output[0].content[0].text
 
         # Extract output text
         content: Optional[str] = result.get("output_text")

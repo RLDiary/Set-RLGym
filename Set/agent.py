@@ -221,7 +221,7 @@ def simulate_single_turn(
     seed: Optional[int] = None,
     *,
     save_prefix: Optional[str] = None,
-    inference_fn: Callable[[str, List[Dict[str, Any]]], Tuple[str, Optional[str]]] = _respond_with_gpt5,
+    inference_fn: Callable[[str, str, str], Tuple[str, Optional[str]]] = _respond_with_gpt5,
 ) -> TurnResult:
     """Run one SET turn with a specified inference function.
 
@@ -233,9 +233,10 @@ def simulate_single_turn(
     Args:
         seed: Optional RNG seed for deterministic environment.
         save_prefix: If provided, saves initial and after-action board PNGs.
-        inference_fn: Callable that accepts ``instructions`` and ``user_parts`` and
-            returns a tuple of (model_text, reasoning). Defaults to the OpenAI
-            GPT-5 implementation.
+        inference_fn: Callable that accepts ``instructions`` (system prompt),
+            ``user_prompt`` (text), and ``image_b64`` (data URL), and returns a
+            tuple of (model_text, reasoning). Defaults to the OpenAI GPT-5
+            implementation.
     """
     logger.info(f"Starting single turn simulation with seed={seed}, save_prefix={save_prefix}")
     env = SetEnv(seed=seed)
@@ -249,22 +250,14 @@ def simulate_single_turn(
 
     system_prompt = _render_system_prompt(require_initial_set=env.require_initial_set)
     img_data_url = _pil_to_png_base64(initial_img)
+    user_prompt = (
+        "Here is the current board. Respond with a single JSON object only, "
+        "per the STRICT OUTPUT FORMAT (use 1-based numbers as shown)."
+    )
 
-    user_parts: List[Dict[str, Any]] = [
-        {
-            "type": "input_text",
-            "text": (
-                "Here is the current board. Respond with a single JSON object only, "
-                "per the STRICT OUTPUT FORMAT (use 1-based numbers as shown)."
-            ),
-        },
-        {
-            "type": "input_image",
-            "image_url": img_data_url,
-        },
-    ]
-
-    reply_text, reasoning = inference_fn(instructions=system_prompt, user_parts=user_parts)
+    reply_text, reasoning = inference_fn(
+        instructions=system_prompt, user_prompt=user_prompt, image_b64=img_data_url
+    )
     logger.debug("Received response from GPT-5, parsing action")
     action, indices = _parse_action(reply_text)
     logger.info(f"Parsed action: {action}, indices: {indices}")

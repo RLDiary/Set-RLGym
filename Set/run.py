@@ -30,35 +30,42 @@ def create_inference_function(backend: str, **kwargs):
     if backend == "openai":
         model = kwargs.get("model", "gpt-5")
         temperature = kwargs.get("temperature", 1.0)
-        return lambda instructions, user_parts: _respond_with_gpt5(
-            instructions=instructions, 
-            user_parts=user_parts, 
-            model=model, 
-            temperature=temperature
+        return lambda instructions, user_prompt, image_b64: _respond_with_gpt5(
+            instructions=instructions,
+            user_prompt=user_prompt,
+            image_b64=image_b64,
+            model=model,
+            temperature=temperature,
         )
     
     elif backend == "vllm":
-        model = kwargs.get("model", "llama-3.2-90b-vision-instruct")
+        model = kwargs.get("model", "Qwen2.5-VL-3B-Instruct/")
         base_url = kwargs.get("base_url", "http://localhost:8000/v1")
         temperature = kwargs.get("temperature", 1.0)
         api_key = kwargs.get("api_key", "EMPTY")
-        return lambda instructions, user_parts: _respond_with_vllm(
+        return lambda instructions, user_prompt, image_b64: _respond_with_vllm(
             instructions=instructions,
-            user_parts=user_parts,
+            user_prompt=user_prompt,
+            image_b64=image_b64,
             model=model,
             base_url=base_url,
             temperature=temperature,
-            api_key=api_key
+            api_key=api_key,
         )
     
     elif backend == "openrouter":
+        # Keep compatibility by adapting to the new agent signature
         model = kwargs.get("model", "anthropic/claude-3.5-sonnet")
         temperature = kwargs.get("temperature", 1.0)
-        return lambda instructions, user_parts: _respond_with_openrouter(
+        return lambda instructions, user_prompt, image_b64: _respond_with_openrouter(
             instructions=instructions,
-            user_parts=user_parts,
+            # Recreate user_parts internally here for OpenRouter
+            user_parts=[
+                {"type": "input_text", "text": user_prompt},
+                {"type": "input_image", "image_url": image_b64},
+            ],
             model=model,
-            temperature=temperature
+            temperature=temperature,
         )
     
     else:
@@ -85,7 +92,7 @@ def run_game(
         if backend == "openai":
             model = "gpt-5"
         elif backend == "vllm":
-            model = "llama-3.2-90b-vision-instruct"
+            model = "Qwen2.5-VL-3B-Instruct/"
         elif backend == "openrouter":
             model = "anthropic/claude-3.5-sonnet"
     
@@ -132,7 +139,7 @@ Examples:
   python run.py --backend openai --model gpt-5
   
   # Run with local vLLM server
-  python run.py --backend vllm --model llama-3.2-90b-vision-instruct --base-url http://localhost:8000/v1
+  python run.py --backend vllm --model Qwen2.5-VL-3B-Instruct/ --base-url http://localhost:8000/v1
   
   # Run with OpenRouter
   python run.py --backend openrouter --model anthropic/claude-3.5-sonnet
