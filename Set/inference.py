@@ -22,7 +22,8 @@ logger = logging.getLogger(__name__)
 def _respond_with_gpt5(
     *,
     instructions: str,
-    user_parts: List[Dict[str, Any]],
+    user_prompt: str,
+    image_b64: str,
     model: str = "gpt-5",
     temperature: float = 1.0,
     reasoning_effort: str = "medium",
@@ -34,7 +35,7 @@ def _respond_with_gpt5(
     the model provides one via the Responses API structured output.
     """
     logger.debug(
-        f"Sending Responses API request to {model} with {len(user_parts)} content parts and temperature={temperature}"
+        f"Sending Responses API request to {model} with multimodal content and temperature={temperature}"
     )
 
     api_key = os.environ.get("OPENAI_API_KEY")
@@ -43,20 +44,26 @@ def _respond_with_gpt5(
 
     client = OpenAI(api_key=api_key)
     logger.debug("Making OpenAI Responses API call")
-    resp = client.chat.completions.create(
-    model='Qwen2.5-VL-3B-Instruct/',
-    messages=[
-        {
-            "role": "user",
-            "content": [
-                {"type": "text", "text": "What’s in this image? Be specific."},
-                {"type": "image_url", "image_url": {"url": image_url, "detail": "high"}},
-            ],
-        }
-    ],
-    temperature=0.2,
-    max_tokens=512,
-)
+    
+    # Use the responses API with correct format
+    resp = client.responses.create(
+        model=model,
+        input=[
+            {
+                "role": "system",
+                "content": [
+                    {"type": "input_text", "text": instructions}
+                ]
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": user_prompt},
+                    {"type": "input_image", "image_url": image_b64}
+                ]
+            }
+        ]
+    )
     # Prefer helper property when available
     # Extract output text and optional reasoning trace
     content = getattr(resp, "output_text", None)
@@ -107,87 +114,42 @@ def _respond_with_gpt5(
 def _respond_with_vllm(
     *,
     instructions: str,
-    user_parts: List[Dict[str, Any]],
+    user_prompt: str,
+    image_b64: str,
     model: str,
     base_url: str = "http://localhost:8000/v1",
     temperature: float = 1.0,
     api_key: str = "EMPTY",
 ) -> Tuple[str, Optional[str]]:
-    """Send a multimodal prompt to vLLM Responses API and return (content, reasoning|None).
+    """Send a multimodal prompt to vLLM completions API and return (content, reasoning|None).
 
-    Uses the OpenAI Responses-style endpoint exposed by vLLM at `{base_url}/responses`.
-    The payload mirrors the one used with the OpenAI SDK in `_respond_with_gpt5`.
+    Uses the OpenAI-compatible completions endpoint exposed by vLLM.
     """
     logger.debug(
-        f"Sending vLLM request to {base_url} with model {model} and {len(user_parts)} content parts and temperature={temperature}"
+        f"Sending vLLM request to {base_url} with model {model} and temperature={temperature}"
     )
     client = OpenAI(base_url=base_url, api_key=api_key)
 
     try:
         resp = client.chat.completions.create(
-        model=model,
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": instructions},
-                    {"type": "image_url", "image_url": {"url": image_url, "detail": "high"}}
-                ]
-            }
-        ],
-            
-        ],
-        temperature=temperature,
+            model=model,
+            messages=[
+                {"role": "system", "content": instructions},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": user_prompt},
+                        {"type": "image_url", "image_url": {"url": image_b64, "detail": "high"}}
+                    ]
+                }
+            ],
+            temperature=temperature,
         )
 
-        result = resp.output[0].content[0].text
-
-        # Extract output text
-        content: Optional[str] = result.get("output_text")
-        reasoning: Optional[str] = None
-
-        if not content:
-            try:
-                text_chunks: List[str] = []
-                reasoning_chunks: List[str] = []
-                for item in result.get("output", []) or []:
-                    item_type = item.get("type")
-                    if item_type == "message":
-                        for c in item.get("content", []) or []:
-                            if c.get("type") == "output_text":
-                                text_chunks.append(c.get("text", ""))
-                    elif item_type == "reasoning":
-                        summary_list = item.get("summary")
-                        if isinstance(summary_list, list):
-                            for s in summary_list:
-                                if isinstance(s, dict) and s.get("type") == "summary_text":
-                                    s_text = s.get("text")
-                                    if s_text:
-                                        reasoning_chunks.append(s_text)
-                content = "".join(text_chunks)
-                if reasoning_chunks:
-                    reasoning = "\n".join(reasoning_chunks).strip() or None
-            except Exception:
-                content = content or ""
-
-        content = (content or "").strip()
-
-        # Top-level reasoning object as fallback
-        if reasoning is None:
-            r = result.get("reasoning")
-            if isinstance(r, dict):
-                summary = r.get("summary")
-                if isinstance(summary, str) and summary.strip():
-                    reasoning = summary.strip()
-                elif isinstance(summary, list):
-                    # Some proxies might already unwrap summary into list entries
-                    texts = [s.get("text", "") for s in summary if isinstance(s, dict) and s.get("type") == "summary_text"]
-                    rt = "\n".join([t for t in texts if t]).strip()
-                    reasoning = rt or None
-
+        content = resp.choices[0].message.content.strip()
+        reasoning: Optional[str] = None  # vLLM completions API doesn't typically provide reasoning
+        
         logger.debug(f"Received vLLM content length: {len(content)} characters")
-        if reasoning:
-            logger.debug(f"Received vLLM reasoning length: {len(reasoning)} characters")
         logger.debug(
             f"Raw model response: {content[:200]}..." if len(content) > 200 else f"Raw model response: {content}"
         )
@@ -204,13 +166,14 @@ def _respond_with_vllm(
 def _respond_with_openrouter(
     *,
     instructions: str,
-    user_parts: List[Dict[str, Any]],
+    user_prompt: str,
+    image_b64: str,
     model: str,
     temperature: float = 1.0,
 ) -> Tuple[str, Optional[str]]:
     """Send a multimodal prompt to OpenRouter API and return (content, reasoning|None)."""
     logger.debug(
-        f"Sending OpenRouter request with model {model} and {len(user_parts)} content parts and temperature={temperature}"
+        f"Sending OpenRouter request with model {model} and temperature={temperature}"
     )
     
     api_key = os.environ.get("OPENROUTER_API_KEY")
@@ -219,29 +182,15 @@ def _respond_with_openrouter(
     
     # Prepare messages for OpenAI format
     messages = [
-        {"role": "system", "content": instructions}
+        {"role": "system", "content": instructions},
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": user_prompt},
+                {"type": "image_url", "image_url": {"url": image_b64}}
+            ]
+        }
     ]
-    
-    # Convert user_parts to OpenAI chat format
-    user_content = []
-    for part in user_parts:
-        if part.get("type") == "input_text":
-            user_content.append({
-                "type": "text",
-                "text": part.get("text", "")
-            })
-        elif part.get("type") == "input_image":
-            user_content.append({
-                "type": "image_url",
-                "image_url": {
-                    "url": part.get("image_url", "")
-                }
-            })
-    
-    messages.append({
-        "role": "user",
-        "content": user_content
-    })
     
     # Make request to OpenRouter
     headers = {
