@@ -117,73 +117,99 @@ def _respond_with_vllm(
     temperature: float = 1.0,
     api_key: str = "EMPTY",
 ) -> Tuple[str, Optional[str]]:
-    """Send a multimodal prompt to vLLM server and return (content, reasoning|None)."""
+    """Send a multimodal prompt to vLLM Responses API and return (content, reasoning|None).
+
+    Uses the OpenAI Responses-style endpoint exposed by vLLM at `{base_url}/responses`.
+    The payload mirrors the one used with the OpenAI SDK in `_respond_with_gpt5`.
+    """
     logger.debug(
-        f"Sending vLLM request to {base_url} with model {model} and {len(user_parts)} content parts and temperature={temperature}"
+        f"Sending vLLM Responses request to {base_url}/responses with model {model} and {len(user_parts)} content parts and temperature={temperature}"
     )
-    
-    # Prepare messages for OpenAI format
-    messages = [
-        {"role": "system", "content": instructions}
-    ]
-    
-    # Convert user_parts to OpenAI chat format
-    user_content = []
-    for part in user_parts:
-        if part.get("type") == "input_text":
-            user_content.append({
-                "type": "text",
-                "text": part.get("text", "")
-            })
-        elif part.get("type") == "input_image":
-            user_content.append({
-                "type": "image_url",
-                "image_url": {
-                    "url": part.get("image_url", "")
-                }
-            })
-    
-    messages.append({
-        "role": "user", 
-        "content": user_content
-    })
-    
-    # Make request to vLLM server
+
     headers = {
         "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_key}"
+        "Authorization": f"Bearer {api_key}",
     }
-    
-    payload = {
+
+    payload: Dict[str, Any] = {
         "model": model,
-        "messages": messages,
+        "instructions": instructions,
+        "input": [
+            {
+                "role": "user",
+                "content": user_parts,
+            }
+        ],
         "temperature": temperature,
-        "max_tokens": 1000
+        # Prefer Responses API naming for token limit; many proxies accept this.
+        "max_output_tokens": 1000,
     }
-    
+
     try:
         response = requests.post(
-            f"{base_url}/chat/completions",
+            f"{base_url}/responses",
             headers=headers,
             json=payload,
-            timeout=30
+            timeout=45,
         )
         response.raise_for_status()
-        
         result = response.json()
-        content = result["choices"][0]["message"]["content"].strip()
-        
+
+        # Extract output text
+        content: Optional[str] = result.get("output_text")
+        reasoning: Optional[str] = None
+
+        if not content:
+            try:
+                text_chunks: List[str] = []
+                reasoning_chunks: List[str] = []
+                for item in result.get("output", []) or []:
+                    item_type = item.get("type")
+                    if item_type == "message":
+                        for c in item.get("content", []) or []:
+                            if c.get("type") == "output_text":
+                                text_chunks.append(c.get("text", ""))
+                    elif item_type == "reasoning":
+                        summary_list = item.get("summary")
+                        if isinstance(summary_list, list):
+                            for s in summary_list:
+                                if isinstance(s, dict) and s.get("type") == "summary_text":
+                                    s_text = s.get("text")
+                                    if s_text:
+                                        reasoning_chunks.append(s_text)
+                content = "".join(text_chunks)
+                if reasoning_chunks:
+                    reasoning = "\n".join(reasoning_chunks).strip() or None
+            except Exception:
+                content = content or ""
+
+        content = (content or "").strip()
+
+        # Top-level reasoning object as fallback
+        if reasoning is None:
+            r = result.get("reasoning")
+            if isinstance(r, dict):
+                summary = r.get("summary")
+                if isinstance(summary, str) and summary.strip():
+                    reasoning = summary.strip()
+                elif isinstance(summary, list):
+                    # Some proxies might already unwrap summary into list entries
+                    texts = [s.get("text", "") for s in summary if isinstance(s, dict) and s.get("type") == "summary_text"]
+                    rt = "\n".join([t for t in texts if t]).strip()
+                    reasoning = rt or None
+
         logger.debug(f"Received vLLM content length: {len(content)} characters")
+        if reasoning:
+            logger.debug(f"Received vLLM reasoning length: {len(reasoning)} characters")
         logger.debug(
             f"Raw model response: {content[:200]}..." if len(content) > 200 else f"Raw model response: {content}"
         )
-        reasoning: Optional[str] = None  # vLLM OpenAI-compatible API typically does not return reasoning traces
         return content, reasoning
-        
+
     except requests.exceptions.RequestException as e:
         logger.error(f"vLLM request failed: {e}")
         raise RuntimeError(f"Failed to get response from vLLM server: {e}")
-    except (KeyError, IndexError) as e:
+    except Exception as e:
         logger.error(f"Unexpected vLLM response format: {e}")
         raise RuntimeError(f"Unexpected response format from vLLM server: {e}")
 

@@ -154,7 +154,7 @@ Examples:
     parser.add_argument(
         "--model",
         type=str,
-        help="Model name to use. Defaults: openai=gpt-5, vllm=llama-3.2-90b-vision-instruct, openrouter=anthropic/claude-sonnet-4"
+        help="Model name to use. Defaults: openai=gpt-5, vllm=Qwen2.5-VL-3B-Instruct/, openrouter=anthropic/claude-sonnet-4"
     )
     
     parser.add_argument(
